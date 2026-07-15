@@ -1,15 +1,13 @@
-// app/coupon/[id]/page.tsx
-// Dynamic route: /coupon/[id]
-//
-// Server component — resolves the coupon ID, validates it exists,
-// generates per-coupon metadata, and delegates all UI to CouponDetailClient.
+﻿// app/coupon/[id]/page.tsx
+// Server component — resolves the coupon ID, generates metadata, and
+// delegates all interactive logic to CouponDetailClient.
 
-import { notFound } from "next/navigation";
 import type { Metadata } from "next";
+import { notFound } from "next/navigation";
 import { getCouponById } from "@/lib/services/couponService";
-import { CouponDetailClient } from "./CouponDetailClient";
+import { CouponDetailClient } from "@/app/coupon/[id]/CouponDetailClient";
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// ── Types ──────────────────────────────────────────────────────────────────────
 
 interface PageProps {
   params: Promise<{ id: string }>;

@@ -5,13 +5,13 @@
 // Reuses GlassPanel and StatusBadge from the design system.
 // Sprint 5: navigates to /coupon/[id] on tap and displays live redemption status.
 
-import React, { useState, useEffect } from "react";
+import React from "react";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import { ChevronRight } from "lucide-react";
 import { GlassPanel } from "@/components/ui/GlassPanel";
 import { StatusBadge } from "@/components/ui/StatusBadge";
-import { subscribeToCouponStatus } from "@/lib/services/firestoreCouponService";
+import { useCouponStatus } from "@/components/common/CouponStatusProvider";
 import type { Coupon, CouponStatus } from "@/types/coupon";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -49,15 +49,8 @@ export const CouponCard: React.FC<CouponCardProps> = ({
   onPress,
   delay = 0,
 }) => {
-  const [liveStatus, setLiveStatus] = useState<CouponStatus>(coupon.status);
-
-  // Subscribe to live status updates (via Firestore or localStorage fallback)
-  useEffect(() => {
-    const unsub = subscribeToCouponStatus(coupon.id, (state) => {
-      setLiveStatus(state?.status ?? coupon.status);
-    });
-    return unsub;
-  }, [coupon.id, coupon.status]);
+  // Reads from the single shared collection listener — no per-card subscription.
+  const liveStatus = useCouponStatus(coupon.id, coupon.status);
 
   const { label, variant } = toStatusBadge(liveStatus);
 

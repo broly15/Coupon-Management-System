@@ -2,23 +2,16 @@ import { initializeApp, getApps, getApp } from "firebase/app";
 import { getFirestore } from "firebase/firestore";
 
 const firebaseConfig = {
-  apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY || "mock-api-key",
-  authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN || "mock-auth-domain",
-  projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || "mock-project-id",
-  storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET || "mock-storage-bucket",
-  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || "mock-messaging-sender-id",
-  appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID || "mock-app-id",
+  apiKey:            process.env.NEXT_PUBLIC_FIREBASE_API_KEY            ?? "AIzaSyCvWtNTL_nWSJE6qAPrDrClfS4OHi2ypNQ",
+  authDomain:        process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN        ?? "khushi-os.firebaseapp.com",
+  projectId:         process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID         ?? "khushi-os",
+  storageBucket:     process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET     ?? "khushi-os.firebasestorage.app",
+  messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID ?? "801718149669",
+  appId:             process.env.NEXT_PUBLIC_FIREBASE_APP_ID             ?? "1:801718149669:web:f0629d830d3915ba9915cc",
 };
 
 // Safe client-side and server-side initialization
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-const db = getFirestore(app);
-
-// Export helper to check if real credentials are set up
-export const isFirebaseConfigured = 
-  process.env.NEXT_PUBLIC_FIREBASE_API_KEY && 
-  process.env.NEXT_PUBLIC_FIREBASE_API_KEY !== "your-api-key" &&
-  process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID &&
-  process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID !== "your-project-id";
+const db  = getFirestore(app);
 
 export { app, db };

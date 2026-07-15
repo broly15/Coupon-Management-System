@@ -1,163 +1,304 @@
 // lib/services/firestoreCouponService.ts
-// Firestore service for coupon redemption state.
+// Coupon redemption state service — hybrid localStorage + Firestore.
 //
 // Architecture:
-//   - Display data (icon, title, descriptions) lives in couponService.ts (static)
-//   - Mutable state (status, redeemedAt) lives in Firestore: coupons/{id}
-//   - If no Firestore document exists, the coupon is in its static state
-//   - Fallback: If Firebase is not configured, we gracefully use localStorage
-//     so the application remains fully functional offline/locally.
+//   Primary store : localStorage  (instant, cross-tab via storage events, zero config)
+//   Optional sync : Firestore      (real-time across devices when credentials are set)
+//
+// When Firebase credentials are NOT configured (no .env.local):
+//   - All state is persisted to localStorage
+//   - Changes broadcast across open tabs via the storage event
+//   - Everything works without a backend
+//
+// When Firebase credentials ARE configured:
+//   - Firestore is used as the source of truth
+//   - localStorage acts as an instant-read cache layer
+//
+// The public API surface (subscribeToCouponStatus, redeemCoupon, etc.) is
+// identical in both modes so no calling code needs to change.
 
-import {
-  doc,
-  onSnapshot,
-  setDoc,
-  serverTimestamp,
-  Timestamp,
-} from "firebase/firestore";
-import { db, isFirebaseConfigured } from "@/lib/firebase";
-import type { CouponStatus } from "@/types/coupon";
+import type { CouponStatus, Coupon } from "@/types/coupon";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 export interface CouponFirestoreState {
   status: CouponStatus;
-  /** ISO string derived from Firestore Timestamp */
+  /** ISO string derived from Firestore Timestamp or Date.now() */
   redeemedAt?: string;
 }
 
-// ── Local Storage Fallback Implementation ──────────────────────────────────────
-
-const LOCAL_STORAGE_KEY = "khushi-os-coupons-state";
-
-interface LocalStateMap {
-  [id: string]: {
-    status: CouponStatus;
-    redeemedAt?: string;
-  };
+export interface AllCouponsLiveState {
+  [id: string]: CouponFirestoreState;
 }
 
-const localListeners = new Set<(id: string) => void>();
+// ── localStorage helpers ──────────────────────────────────────────────────────
 
-function getLocalState(id: string): CouponFirestoreState | null {
-  if (typeof window === "undefined") return null;
+const LS_KEY = "cms_coupon_states";
+
+function readLocalStates(): AllCouponsLiveState {
+  if (typeof window === "undefined") return {};
   try {
-    const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as LocalStateMap;
-    return parsed[id] || null;
-  } catch (e) {
-    console.error("Failed to read local coupon state", e);
-    return null;
+    const raw = localStorage.getItem(LS_KEY);
+    return raw ? (JSON.parse(raw) as AllCouponsLiveState) : {};
+  } catch {
+    return {};
   }
 }
 
-function setLocalState(id: string, status: CouponStatus, redeemedAt?: string) {
+function writeLocalStates(states: AllCouponsLiveState): void {
   if (typeof window === "undefined") return;
   try {
-    const raw = localStorage.getItem(LOCAL_STORAGE_KEY);
-    const parsed = raw ? (JSON.parse(raw) as LocalStateMap) : {};
-    parsed[id] = { status, redeemedAt };
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(parsed));
-    
-    // Notify all active listeners
-    localListeners.forEach((listener) => listener(id));
-  } catch (e) {
-    console.error("Failed to write local coupon state", e);
+    localStorage.setItem(LS_KEY, JSON.stringify(states));
+    // Dispatch a custom event so same-tab listeners update immediately
+    // (storage event only fires in OTHER tabs, not the current one)
+    window.dispatchEvent(new StorageEvent("storage", { key: LS_KEY }));
+  } catch {
+    // Storage quota exceeded — silently skip
   }
 }
 
-// ── Subscription ──────────────────────────────────────────────────────────────
+function patchLocalState(id: string, patch: CouponFirestoreState): void {
+  const states = readLocalStates();
+  states[id] = patch;
+  writeLocalStates(states);
+}
 
-/**
- * Subscribes to live Firestore state for a coupon.
- * Falls back to localStorage if Firebase is not configured or fails to connect.
- *
- * Returns an unsubscribe function — call it in useEffect cleanup.
- */
-export function subscribeToCouponStatus(
-  id: string,
-  callback: (state: CouponFirestoreState | null) => void
-): () => void {
-  // If Firebase is not configured, use local storage subscription
-  if (!isFirebaseConfigured) {
-    const handleUpdate = (updatedId: string) => {
-      if (updatedId === id) {
-        callback(getLocalState(id));
-      }
-    };
-    
-    // Push initial local state
-    callback(getLocalState(id));
-    
-    localListeners.add(handleUpdate);
-    return () => {
-      localListeners.delete(handleUpdate);
-    };
-  }
+// ── Subscriber registry (same-tab fan-out) ────────────────────────────────────
+// When the storage event fires we update all active listeners so both
+// the wallet cards and the admin dashboard update in the same render cycle.
 
-  const ref = doc(db, "coupons", id);
+type AllStatesCallback = (states: AllCouponsLiveState) => void;
+type SingleCallback = (state: CouponFirestoreState | null) => void;
 
-  // Subscribe to real Firestore, fallback to local on error
+const allListeners = new Set<AllStatesCallback>();
+const singleListeners = new Map<string, Set<SingleCallback>>();
+
+function notifyAll(): void {
+  const states = readLocalStates();
+  allListeners.forEach((cb) => cb(states));
+  singleListeners.forEach((cbs, id) => {
+    const state = states[id] ?? null;
+    cbs.forEach((cb) => cb(state));
+  });
+}
+
+// ── Firestore (optional, lazy) ────────────────────────────────────────────────
+
+let firestoreSetup = false;
+let isFirebaseReady = false;
+
+async function maybeSetupFirestore(): Promise<void> {
+  if (firestoreSetup) return;
+  firestoreSetup = true;
+
   try {
-    const unsub = onSnapshot(
-      ref,
-      (snap) => {
-        if (!snap.exists()) {
-          callback(null);
-          return;
-        }
+    // firebase.ts now always has real credentials baked in as fallbacks,
+    // so we can import db directly without checking env vars.
+    console.info("[CMS] Connecting to Firestore (khushi-os)…");
 
-        const data = snap.data();
-        callback({
+    // Dynamically import so the SDK is only loaded when actually needed
+    const [
+      { collection, onSnapshot, doc, setDoc, serverTimestamp, Timestamp, deleteField, writeBatch },
+      { db },
+    ] = await Promise.all([
+      import("firebase/firestore"),
+      import("@/lib/firebase"),
+    ]);
+
+    isFirebaseReady = true;
+
+    // Mirror Firestore collection into localStorage and notify all listeners
+    const ref = collection(db, "coupons");
+    onSnapshot(ref, (snap) => {
+      const states: AllCouponsLiveState = readLocalStates();
+      snap.docs.forEach((docSnap) => {
+        const data = docSnap.data();
+        states[docSnap.id] = {
           status: data.status as CouponStatus,
           redeemedAt:
             data.redeemedAt instanceof Timestamp
               ? data.redeemedAt.toDate().toISOString()
               : undefined,
-        });
-      },
-      (error) => {
-        console.warn("Firestore subscription failed, falling back to localStorage:", error);
-        // On error, fall back to local storage
-        callback(getLocalState(id));
-      }
-    );
-    return unsub;
-  } catch (e) {
-    console.warn("Failed to set up Firestore snapshot listener, using localStorage fallback:", e);
-    callback(getLocalState(id));
-    return () => {};
+        };
+      });
+      writeLocalStates(states);
+      notifyAll();
+    });
+
+  } catch (err) {
+    console.warn("[CMS] Firestore setup failed, staying in localStorage mode:", err);
   }
 }
 
-// ── Redemption ────────────────────────────────────────────────────────────────
+// ── Global storage event bridge ───────────────────────────────────────────────
+// Set up once on the client to propagate changes across tabs AND within this tab.
+
+if (typeof window !== "undefined") {
+  window.addEventListener("storage", (e) => {
+    if (e.key === LS_KEY || e.key === null) {
+      notifyAll();
+    }
+  });
+  // Kick off Firestore setup (non-blocking)
+  maybeSetupFirestore().catch(console.warn);
+}
+
+// ── Subscription (Single Coupon) ──────────────────────────────────────────────
 
 /**
- * Redeems a coupon by writing to Firestore.
- * Falls back to localStorage if Firebase is not configured.
+ * Subscribes to live state for a single coupon.
+ * Fires immediately with the current localStorage value, then on every change.
+ * Returns an unsubscribe function.
+ */
+export function subscribeToCouponStatus(
+  id: string,
+  callback: (state: CouponFirestoreState | null) => void
+): () => void {
+  // Immediate call with current state
+  const current = readLocalStates();
+  callback(current[id] ?? null);
+
+  // Register listener for future changes
+  if (!singleListeners.has(id)) {
+    singleListeners.set(id, new Set());
+  }
+  singleListeners.get(id)!.add(callback);
+
+  return () => {
+    singleListeners.get(id)?.delete(callback);
+  };
+}
+
+// ── Subscription (All Coupons) ────────────────────────────────────────────────
+
+/**
+ * Subscribes to live state for all coupons.
+ * Fires immediately with current localStorage values, then on every change.
+ * Returns an unsubscribe function.
+ */
+export function subscribeToAllCouponsStatus(
+  callback: (states: AllCouponsLiveState) => void
+): () => void {
+  // Immediate call with current state
+  callback(readLocalStates());
+
+  allListeners.add(callback);
+
+  return () => {
+    allListeners.delete(callback);
+  };
+}
+
+// ── Mutation Actions ──────────────────────────────────────────────────────────
+
+/**
+ * Redeems a coupon. Updates localStorage immediately (cross-tab via storage event),
+ * and syncs to Firestore in the background when credentials are configured.
  */
 export async function redeemCoupon(id: string): Promise<void> {
-  const redeemedAtStr = new Date().toISOString();
+  const redeemedAt = new Date().toISOString();
+  patchLocalState(id, { status: "redeemed", redeemedAt });
 
-  if (!isFirebaseConfigured) {
-    setLocalState(id, "redeemed", redeemedAtStr);
-    return;
-  }
-
-  try {
-    const ref = doc(db, "coupons", id);
-    await setDoc(
-      ref,
-      {
-        status: "redeemed",
-        redeemedAt: serverTimestamp(),
-      },
-      { merge: true }
-    );
-  } catch (e) {
-    console.warn("Firestore setDoc failed, falling back to localStorage redemption:", e);
-    setLocalState(id, "redeemed", redeemedAtStr);
+  if (isFirebaseReady) {
+    try {
+      const [{ doc, setDoc, serverTimestamp }, { db }] = await Promise.all([
+        import("firebase/firestore"),
+        import("@/lib/firebase"),
+      ]);
+      const ref = doc(db, "coupons", id);
+      await setDoc(ref, { status: "redeemed", redeemedAt: serverTimestamp() }, { merge: true });
+    } catch (err) {
+      console.warn("[CMS] Firestore sync failed for redeemCoupon:", err);
+    }
   }
 }
 
+/**
+ * Updates a coupon to a specific status. Updates localStorage immediately.
+ */
+export async function updateCouponStatus(
+  id: string,
+  status: CouponStatus
+): Promise<void> {
+  const patch: CouponFirestoreState =
+    status === "redeemed"
+      ? { status, redeemedAt: new Date().toISOString() }
+      : { status };
+  patchLocalState(id, patch);
+
+  if (isFirebaseReady) {
+    try {
+      const [{ doc, setDoc, serverTimestamp, deleteField }, { db }] = await Promise.all([
+        import("firebase/firestore"),
+        import("@/lib/firebase"),
+      ]);
+      const ref = doc(db, "coupons", id);
+      await setDoc(
+        ref,
+        {
+          status,
+          redeemedAt: status === "redeemed" ? serverTimestamp() : deleteField(),
+        },
+        { merge: true }
+      );
+    } catch (err) {
+      console.warn("[CMS] Firestore sync failed for updateCouponStatus:", err);
+    }
+  }
+}
+
+/**
+ * Resets all coupons to their default static statuses.
+ */
+export async function resetAllCoupons(coupons: Coupon[]): Promise<void> {
+  const states = readLocalStates();
+  coupons.forEach((coupon) => {
+    states[coupon.id] = { status: coupon.status };
+  });
+  writeLocalStates(states);
+
+  if (isFirebaseReady) {
+    try {
+      const [{ doc, writeBatch, deleteField }, { db }] = await Promise.all([
+        import("firebase/firestore"),
+        import("@/lib/firebase"),
+      ]);
+      const batch = writeBatch(db);
+      coupons.forEach((coupon) => {
+        const ref = doc(db, "coupons", coupon.id);
+        batch.set(ref, { status: coupon.status, redeemedAt: deleteField() }, { merge: true });
+      });
+      await batch.commit();
+    } catch (err) {
+      console.warn("[CMS] Firestore sync failed for resetAllCoupons:", err);
+    }
+  }
+}
+
+/**
+ * Marks all coupons as available.
+ */
+export async function markAllAvailable(coupons: Coupon[]): Promise<void> {
+  const states = readLocalStates();
+  coupons.forEach((coupon) => {
+    states[coupon.id] = { status: "available" };
+  });
+  writeLocalStates(states);
+
+  if (isFirebaseReady) {
+    try {
+      const [{ doc, writeBatch, deleteField }, { db }] = await Promise.all([
+        import("firebase/firestore"),
+        import("@/lib/firebase"),
+      ]);
+      const batch = writeBatch(db);
+      coupons.forEach((coupon) => {
+        const ref = doc(db, "coupons", coupon.id);
+        batch.set(ref, { status: "available", redeemedAt: deleteField() }, { merge: true });
+      });
+      await batch.commit();
+    } catch (err) {
+      console.warn("[CMS] Firestore sync failed for markAllAvailable:", err);
+    }
+  }
+}

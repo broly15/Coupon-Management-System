@@ -3,6 +3,7 @@
 import React from "react";
 import { usePathname } from "next/navigation";
 import { BottomDock } from "@/components/common/BottomDock";
+import { CouponStatusProvider } from "@/components/common/CouponStatusProvider";
 
 // ── Dock visibility config ────────────────────────────────────────────────────
 // To hide the dock on a specific page, add its exact path to DOCK_HIDDEN_EXACT.
@@ -11,7 +12,7 @@ import { BottomDock } from "@/components/common/BottomDock";
 // config arrays need to grow for future fullscreen routes.
 
 /** Exact paths where the dock is always hidden. */
-const DOCK_HIDDEN_EXACT: readonly string[] = ["/"];
+const DOCK_HIDDEN_EXACT: readonly string[] = ["/", "/admin"];
 
 /**
  * Path prefixes whose entire subtree hides the dock.
@@ -36,9 +37,9 @@ export const ShellWrapper: React.FC<{ children: React.ReactNode }> = ({
   const showDock = !isDockHidden(pathname);
 
   return (
-    <>
+    <CouponStatusProvider>
       <div className={showDock ? "pb-28" : undefined}>{children}</div>
       {showDock && <BottomDock />}
-    </>
+    </CouponStatusProvider>
   );
 };
