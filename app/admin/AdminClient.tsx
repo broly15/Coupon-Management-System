@@ -15,6 +15,8 @@ import {
   ExternalLink,
   Check,
   AlertTriangle,
+  QrCode,
+  Download,
 } from "lucide-react";
 import { getCoupons } from "@/lib/services/couponService";
 import {
@@ -23,6 +25,9 @@ import {
   markAllAvailable,
 } from "@/lib/services/firestoreCouponService";
 import { useCouponStatusContext } from "@/components/common/CouponStatusProvider";
+import { getCouponUrl, generatePNG, generateSVG } from "@/lib/utils/qrGenerator";
+import { exportPrintPackZip, triggerBlobDownload } from "@/lib/utils/zipExporter";
+import { QRPreviewModal } from "@/components/admin/QRPreviewModal";
 import { GlassPanel } from "@/components/ui/GlassPanel";
 import { PrimaryButton } from "@/components/ui/PrimaryButton";
 import { SecondaryButton } from "@/components/ui/SecondaryButton";
@@ -64,6 +69,11 @@ export function AdminClient() {
 
   // Copied indicator state
   const [copiedId, setCopiedId] = useState<string | null>(null);
+
+  // QR Modal State
+  const [previewCoupon, setPreviewCoupon] = useState<Coupon | null>(null);
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  const [isZipping, setIsZipping] = useState(false);
 
   // Merge static display data with live statuses
   const coupons: Coupon[] = useMemo(() => {
@@ -107,13 +117,54 @@ export function AdminClient() {
     });
   }, [coupons, searchQuery, statusFilter]);
 
-  // Copy URL to Clipboard
+  // Copy Configured URL to Clipboard
   const handleCopyLink = (id: string) => {
-    const absoluteLink = `${window.location.origin}/coupon/${id}`;
+    const absoluteLink = getCouponUrl(id);
     navigator.clipboard.writeText(absoluteLink).then(() => {
       setCopiedId(id);
       setTimeout(() => setCopiedId(null), 1800);
     });
+  };
+
+  // Preview QR Modal
+  const handlePreviewQR = (coupon: Coupon) => {
+    setPreviewCoupon(coupon);
+    setIsPreviewOpen(true);
+  };
+
+  // Direct PNG download
+  const handleDownloadPNG = async (coupon: Coupon) => {
+    try {
+      const targetUrl = getCouponUrl(coupon.id);
+      const blob = await generatePNG(targetUrl);
+      triggerBlobDownload(blob, `${coupon.id}.png`);
+    } catch (err) {
+      console.error("Failed to download PNG:", err);
+    }
+  };
+
+  // Direct SVG download
+  const handleDownloadSVG = async (coupon: Coupon) => {
+    try {
+      const targetUrl = getCouponUrl(coupon.id);
+      const blob = await generateSVG(targetUrl);
+      triggerBlobDownload(blob, `${coupon.id}.svg`);
+    } catch (err) {
+      console.error("Failed to download SVG:", err);
+    }
+  };
+
+  // Compile and download bulk print pack ZIP
+  const handleDownloadPrintPack = async () => {
+    setIsZipping(true);
+    try {
+      const zipBlob = await exportPrintPackZip(staticCoupons);
+      triggerBlobDownload(zipBlob, "khushi-os-printpack.zip");
+    } catch (err) {
+      console.error("Failed to generate bulk ZIP Print Pack:", err);
+    } finally {
+      setIsZipping(false);
+    }
   };
 
   // Mutate single status
@@ -203,6 +254,24 @@ export function AdminClient() {
             <CheckCircle size={14} />
             Mark All Available
           </SecondaryButton>
+          <PrimaryButton
+            id="bulk-printpack-btn"
+            onClick={handleDownloadPrintPack}
+            className="flex items-center gap-2 px-4 py-2.5 text-xs font-bold bg-gradient-to-r from-pink-500 to-violet-600 shadow-pink-500/10 text-white cursor-pointer"
+            disabled={!isReady || isZipping}
+          >
+            {isZipping ? (
+              <>
+                <span className="h-3 w-3 animate-spin rounded-full border border-white/30 border-t-white" />
+                Zipping Pack…
+              </>
+            ) : (
+              <>
+                <Download size={14} />
+                Download Print Pack (ZIP)
+              </>
+            )}
+          </PrimaryButton>
         </div>
 
         <div className="h-px bg-white/[0.06]" />
@@ -302,7 +371,7 @@ export function AdminClient() {
                   href={`/coupon/${coupon.id}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1.5 rounded-button border border-white/[0.08] bg-transparent px-3.5 py-2 text-xs font-semibold text-zinc-400 transition-all hover:bg-white/5 hover:text-white"
+                  className="inline-flex items-center gap-1.5 rounded-button border border-white/[0.08] bg-transparent px-3 py-2 text-xs font-semibold text-zinc-400 transition-all hover:bg-white/5 hover:text-white"
                   title="View coupon in new tab"
                 >
                   <ExternalLink size={12} />
@@ -312,7 +381,7 @@ export function AdminClient() {
                 {/* Copy link to clipboard */}
                 <button
                   onClick={() => handleCopyLink(coupon.id)}
-                  className={`inline-flex items-center gap-1.5 rounded-button border px-3.5 py-2 text-xs font-semibold transition-all cursor-pointer ${
+                  className={`inline-flex items-center gap-1.5 rounded-button border px-3 py-2 text-xs font-semibold transition-all cursor-pointer ${
                     copiedId === coupon.id
                       ? "border-green-500/20 bg-green-950/20 text-green-400"
                       : "border-white/[0.08] bg-transparent text-zinc-400 hover:bg-white/5 hover:text-white"
@@ -321,6 +390,36 @@ export function AdminClient() {
                 >
                   {copiedId === coupon.id ? <Check size={12} /> : <Copy size={12} />}
                   {copiedId === coupon.id ? "Copied" : "Copy Link"}
+                </button>
+
+                {/* Preview QR */}
+                <button
+                  onClick={() => handlePreviewQR(coupon)}
+                  className="inline-flex items-center gap-1.5 rounded-button border border-white/[0.08] bg-transparent px-3 py-2 text-xs font-semibold text-zinc-400 transition-all hover:bg-white/5 hover:text-white cursor-pointer"
+                  title="Preview QR Code"
+                >
+                  <QrCode size={12} />
+                  Preview QR
+                </button>
+
+                {/* Download PNG */}
+                <button
+                  onClick={() => handleDownloadPNG(coupon)}
+                  className="inline-flex items-center gap-1.5 rounded-button border border-white/[0.08] bg-transparent px-3 py-2 text-xs font-semibold text-zinc-400 transition-all hover:bg-white/5 hover:text-white cursor-pointer"
+                  title="Download PNG format QR"
+                >
+                  <Download size={12} />
+                  PNG
+                </button>
+
+                {/* Download SVG */}
+                <button
+                  onClick={() => handleDownloadSVG(coupon)}
+                  className="inline-flex items-center gap-1.5 rounded-button border border-white/[0.08] bg-transparent px-3 py-2 text-xs font-semibold text-zinc-400 transition-all hover:bg-white/5 hover:text-white cursor-pointer"
+                  title="Download SVG format QR"
+                >
+                  <Download size={12} />
+                  SVG
                 </button>
 
                 {/* Status operations */}
@@ -385,6 +484,12 @@ export function AdminClient() {
           </div>
         </div>
       )}
+      {/* QR Code Preview Modal */}
+      <QRPreviewModal
+        coupon={previewCoupon}
+        isOpen={isPreviewOpen}
+        onClose={() => setIsPreviewOpen(false)}
+      />
     </main>
   );
 }

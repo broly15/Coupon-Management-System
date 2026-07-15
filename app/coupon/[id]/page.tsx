@@ -1,10 +1,10 @@
-﻿// app/coupon/[id]/page.tsx
+// app/coupon/[id]/page.tsx
 // Server component — resolves the coupon ID, generates metadata, and
 // delegates all interactive logic to CouponDetailClient.
 
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { getCouponById } from "@/lib/services/couponService";
+import { getCouponById, getCoupons } from "@/lib/services/couponService";
 import { CouponDetailClient } from "@/app/coupon/[id]/CouponDetailClient";
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -31,7 +31,11 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
 
 // ── Page ──────────────────────────────────────────────────────────────────────
 
-export default async function CouponPage({ params }: PageProps) {
+export async function generateStaticParams() {
+  const coupons = getCoupons();
+  return coupons.map((c) => ({ id: c.id }));
+}
+  export default async function CouponPage({ params }: PageProps) {
   const { id } = await params;
   const coupon = getCouponById(id);
 
