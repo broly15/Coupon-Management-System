@@ -31,3 +31,7 @@ body {
   margin: 0;
   padding: 0;
 }
+
+/* Safe‑area utilities – use pt-safe / pb-safe to respect notches */
+@utility pt-safe { padding-top: env(safe-area-inset-top); }
+@utility pb-safe { padding-bottom: env(safe-area-inset-bottom); }

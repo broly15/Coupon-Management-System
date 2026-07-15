@@ -35,7 +35,8 @@ export async function generateStaticParams() {
   const coupons = getCoupons();
   return coupons.map((c) => ({ id: c.id }));
 }
-  export default async function CouponPage({ params }: PageProps) {
+
+export default async function CouponPage({ params }: PageProps) {
   const { id } = await params;
   const coupon = getCouponById(id);
 

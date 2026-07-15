@@ -18,8 +18,13 @@ export interface QRGeneratorOptions {
  * Uses NEXT_PUBLIC_APP_URL with a fallback to localhost:3000.
  */
 export function getCouponUrl(id: string): string {
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL;
+  // In production NEXT_PUBLIC_APP_URL must be defined (see lib/firebase.ts).
+  // During local development we fall back to the current origin so the QR preview works.
+  const envUrl = process.env.NEXT_PUBLIC_APP_URL;
+  const baseUrl =
+    envUrl ?? (typeof window !== "undefined" ? window.location.origin : undefined);
   if (!baseUrl) {
+    // This will only happen in a production build where the env var is truly missing.
     throw new Error('NEXT_PUBLIC_APP_URL is not defined');
   }
   const cleanBaseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
