@@ -15,8 +15,9 @@ export const metadata: Metadata = {
     template: "%s | Khushi OS",
   },
   description: "A handcrafted digital universe made especially for Khushi.",
-  viewport: "width=device-width, initial-scale=1",
 };
+
+export const viewport = "width=device-width, initial-scale=1";
 
 export default function RootLayout({
   children,
